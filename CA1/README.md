@@ -41,7 +41,8 @@ cloudAsgn/
 - Terraform ~1.6.0+
 - Ansible ~2.13+ --- with `community.docker` << ?
 - AWS CLI configured with valid IAM credentials
-- SSH key - used ssh-keygen to create (aws_rsa)
+- SECURITY: SSH key - used ssh-keygen to create (aws_rsa)
+- - To use this IaC you must gernerate a key named aws_rsa. Example: `ssh-keygen -t rsa -b 4096 -f ~/.ssh/aws_rsa`
 
 ---
 ## 📓 Deployment Instructions
