@@ -1,0 +1,266 @@
+# - hosts: all
+#   gather_facts: yes
+#   tasks: []
+
+- hosts: kafka
+  become: yes
+  tasks:
+    - name: Install Java
+      apt:
+        name: openjdk-11-jdk
+        state: present
+        update_cache: yes
+
+    - name: Copy Kafka archive
+      copy:
+        src: files/kafka_2.13-3.7.0.tgz
+        dest: /tmp/kafka.tgz
+
+    - name: Extract Kafka
+      unarchive:
+        src: /tmp/kafka.tgz
+        dest: /opt/
+        remote_src: yes
+        creates: /opt/kafka_2.13-3.7.0
+
+    - name: Symlink Kafka directory
+      file:
+        src: /opt/kafka_2.13-3.7.0
+        dest: /opt/kafka
+        state: link
+
+    - name: Create ZooKeeper systemd service
+      copy:
+        dest: /etc/systemd/system/zookeeper.service
+        content: |
+          [Unit]
+          Description=Apache ZooKeeper
+          After=network.target
+
+          [Service]
+          Type=simple
+          ExecStart=/opt/kafka/bin/zookeeper-server-start.sh /opt/kafka/config/zookeeper.properties
+          ExecStop=/opt/kafka/bin/zookeeper-server-stop.sh
+          Restart=on-abnormal
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Create Kafka systemd service
+      copy:
+        dest: /etc/systemd/system/kafka.service
+        content: |
+          [Unit]
+          Description=Apache Kafka
+          After=zookeeper.service
+
+          [Service]
+          Type=simple
+          Environment="KAFKA_HEAP_OPTS=-Xmx256M -Xms128M"
+          ExecStart=/opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/server.properties
+          ExecStop=/opt/kafka/bin/kafka-server-stop.sh
+          Restart=on-abnormal
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Configure Kafka listeners
+      lineinfile:
+        path: /opt/kafka/config/server.properties
+        regexp: '^listeners='
+        line: 'listeners=PLAINTEXT://0.0.0.0:9092'
+      notify: Restart Kafka
+
+    - name: Configure Kafka advertised.listeners
+      lineinfile:
+        path: /opt/kafka/config/server.properties
+        regexp: '^advertised.listeners='
+        line: 'advertised.listeners=PLAINTEXT://{{ ansible_default_ipv4.address }}:9092'
+      notify: Restart Kafka
+
+    - name: Enable and start ZooKeeper
+      systemd:
+        name: zookeeper
+        enabled: yes
+        state: started
+
+    - name: Enable and start Kafka
+      systemd:
+        name: kafka
+        enabled: yes
+        state: started
+
+  handlers:
+    - name: Restart Kafka
+      systemd:
+        name: kafka
+        state: restarted         
+
+- hosts: db
+  become: yes
+  tasks:
+    - name: Copy MongoDB archive
+      copy:
+        src: files/mongodb-linux-x86_64-ubuntu2204-6.0.6.tgz
+        dest: /tmp/mongodb.tgz
+
+    - name: Extract MongoDB
+      unarchive:
+        src: /tmp/mongodb.tgz
+        dest: /opt/
+        remote_src: yes
+        creates: /opt/mongodb-linux-x86_64-ubuntu2204-6.0.6
+
+    - name: Symlink MongoDB directory
+      file:
+        src: /opt/mongodb-linux-x86_64-ubuntu2204-6.0.6
+        dest: /opt/mongodb
+        state: link
+
+    - name: Create MongoDB data directory
+      file:
+        path: /var/lib/mongo
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+
+    - name: Create MongoDB log directory
+      file:
+        path: /var/log/mongodb
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+
+    - name: Create MongoDB systemd service
+      copy:
+        dest: /etc/systemd/system/mongod.service
+        content: |
+          [Unit]
+          Description=MongoDB Database Server
+          After=network.target
+
+          [Service]
+          User=ubuntu
+          ExecStart=/opt/mongodb/bin/mongod --dbpath /var/lib/mongo --logpath /var/log/mongodb/mongod.log --bind_ip 0.0.0.0
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Enable and start MongoDB
+      systemd:
+        name: mongod
+        state: started
+        enabled: yes
+
+- hosts: producer
+  become: yes
+  tasks:
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+        update_cache: yes
+
+    - name: Enable and start Docker
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Create Producer directory
+      file:
+        path: /home/ubuntu/producer
+        state: directory
+
+    - name: Copy Producer script
+      template:
+        src: templates/producer.py.j2
+        dest: /home/ubuntu/producer/producer.py
+
+    - name: Copy Producer Dockerfile
+      template:
+        src: templates/producer.Dockerfile.j2
+        dest: /home/ubuntu/producer/Dockerfile
+
+    # - name: Build Producer Docker image
+    #   community.docker.docker_image:
+    #     name: producer
+    #     build:
+    #       path: /home/ubuntu/producer
+
+    - name: Build Producer Docker image
+      community.docker.docker_image:
+        name: producer
+        source: build
+        build:
+          path: /home/ubuntu/producer
+
+    - name: Run Producer container
+      community.docker.docker_container:
+        name: producer
+        image: producer
+        state: started
+        restart_policy: always
+
+
+- hosts: processor
+  become: yes
+  tasks:
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+        update_cache: yes
+
+    - name: Enable and start Docker
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Create Processor directory
+      file:
+        path: /home/ubuntu/processor
+        state: directory
+
+    - name: Copy Processor script
+      template:
+        src: templates/processor.py.j2
+        dest: /home/ubuntu/processor/processor.py
+
+    - name: Copy Processor Dockerfile
+      template:
+        src: templates/processor.Dockerfile.j2
+        dest: /home/ubuntu/processor/Dockerfile
+
+    # - name: Build Processor Docker image
+    #   community.docker.docker_image:
+    #     name: processor
+    #     build:
+    #       path: /home/ubuntu/processor
+
+    
+    - name: Build Processor Docker image
+      community.docker.docker_image:
+        name: processor
+        source: build
+        build:
+          path: /home/ubuntu/processor
+
+    - name: Run Processor container
+      community.docker.docker_container:
+        name: processor
+        image: processor
+        state: started
+        restart_policy: always
