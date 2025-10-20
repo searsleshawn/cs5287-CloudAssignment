@@ -1,0 +1,52 @@
+version: "3.9"
+
+networks:
+  iot_net:
+    external: true
+
+secrets:
+  mongo_credentials:
+    external: true
+
+configs:
+  processor_config:
+    file: /home/ubuntu/iot_declarative/processor_config.env
+
+services:
+  mongo:
+    image: mongo:6.0
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: {{ mongo_username }}
+      MONGO_INITDB_ROOT_PASSWORD: {{ mongo_password }}
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - iot_net
+    deploy:
+      restart_policy:
+        condition: any
+
+  processor:
+    image: {{ dockerhub_username }}/processor:latest
+    configs:
+      - source: processor_config
+        target: /app/processor_config.env
+    networks:
+      - iot_net
+    deploy:
+      replicas: {{ processor_replicas | default(1) }}
+      restart_policy:
+        condition: any
+
+  producer:
+    image: {{ dockerhub_username }}/producer:latest
+    networks:
+      - iot_net
+    deploy:
+      replicas: {{ producer_replicas | default(2) }}
+      restart_policy:
+        condition: any
+
+volumes:
+  mongo_data:
+    driver: local

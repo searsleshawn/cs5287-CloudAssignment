@@ -1,0 +1,4 @@
+# vars/declarative.yml
+dockerhub_username: searsleshawn
+processor_replicas: 1
+producer_replicas: 5

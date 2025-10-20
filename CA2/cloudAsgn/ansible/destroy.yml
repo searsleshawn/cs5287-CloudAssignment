@@ -1,0 +1,22 @@
+# ============================================================
+# destroy.yml – Teardown for CA2 Swarm Stack
+# ============================================================
+
+- hosts: kafka
+  become: yes
+  vars_files:
+    - vars/declarative.yml
+
+  tasks:
+    - name: Remove Docker Swarm stack (iot_stack)
+      community.docker.docker_stack:
+        name: iot_stack
+        state: absent
+
+    - name: Verify stack removal
+      shell: docker stack ls
+      register: stack_list
+      changed_when: false
+
+    - debug:
+        var: stack_list.stdout_lines

@@ -1,0 +1,164 @@
+# ============================================================
+# IoT Event Pipeline Setup and Swarm Initialization
+# ============================================================
+
+# ---------------------------
+# Kafka Node (Manager Node)
+# ---------------------------
+- hosts: kafka
+  become: yes
+  vars:
+    kafka_dir: /opt/kafka
+  tasks:
+    # --- Basic dependencies ---
+    - name: Install required system packages
+      apt:
+        name:
+          - openjdk-11-jdk
+          - docker.io
+          - python3-pip
+        state: present
+        update_cache: yes
+
+    - name: Enable and start Docker
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    # --- Python dependencies for Ansible Docker modules ---
+    - name: Install Ansible Docker SDK dependencies
+      pip:
+        name:
+          - docker
+          - jsondiff
+        state: present
+
+    # --- Kafka binaries (for reference, no systemd startup) ---
+    - name: Copy Kafka archive
+      copy:
+        src: files/kafka_2.13-3.7.0.tgz
+        dest: /tmp/kafka.tgz
+
+    - name: Extract Kafka binaries
+      unarchive:
+        src: /tmp/kafka.tgz
+        dest: /opt/
+        remote_src: yes
+        creates: /opt/kafka_2.13-3.7.0
+
+    - name: Symlink Kafka directory
+      file:
+        src: /opt/kafka_2.13-3.7.0
+        dest: "{{ kafka_dir }}"
+        state: link
+
+    # --- Docker Swarm initialization ---
+    - name: Initialize Docker Swarm (manager)
+      shell: docker swarm init --advertise-addr {{ ansible_default_ipv4.address }} || true
+      register: swarm_init
+      ignore_errors: yes
+
+    - name: Create overlay network for IoT stack
+      community.docker.docker_network:
+        name: iot_net
+        driver: overlay
+        state: present
+
+    - name: Get Swarm join token for workers
+      shell: docker swarm join-token -q worker
+      register: swarm_worker_token
+      changed_when: false
+
+    # --- Docker image build and push ---
+    - name: Ensure ubuntu user in docker group
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
+
+    - name: Create build directories
+      file:
+        path: "/home/ubuntu/{{ item }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+      loop:
+        - processor
+        - producer
+
+    - name: Copy application source templates
+      template:
+        src: "templates/{{ item }}.py.j2"
+        dest: "/home/ubuntu/{{ item }}/{{ item }}.py"
+      loop:
+        - processor
+        - producer
+
+# ---------------------------
+# Worker Nodes Join Swarm
+# ---------------------------
+- hosts: db, processor, producer
+  become: yes
+  serial: 1
+  tasks:
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+        update_cache: yes
+
+    - name: Enable and start Docker
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Join node to Docker Swarm cluster
+      shell: >
+        docker swarm join
+        --token {{ hostvars[groups['kafka'][0]].swarm_worker_token.stdout }}
+        {{ hostvars[groups['kafka'][0]].ansible_default_ipv4.address }}:2377 || true
+      when:
+        - groups['kafka'] is defined
+        - hostvars[groups['kafka'][0]].swarm_worker_token is defined
+      ignore_errors: yes
+
+# ---------------------------
+# Database Node (MongoDB)
+# ---------------------------
+- hosts: db
+  become: yes
+  tasks:
+    - name: Copy MongoDB archive
+      copy:
+        src: files/mongodb-linux-x86_64-ubuntu2204-6.0.6.tgz
+        dest: /tmp/mongodb.tgz
+
+    - name: Extract MongoDB
+      unarchive:
+        src: /tmp/mongodb.tgz
+        dest: /opt/
+        remote_src: yes
+        creates: /opt/mongodb-linux-x86_64-ubuntu2204-6.0.6
+
+    - name: Symlink MongoDB directory
+      file:
+        src: /opt/mongodb-linux-x86_64-ubuntu2204-6.0.6
+        dest: /opt/mongodb
+        state: link
+    - name: Create MongoDB data directory
+      file:
+        path: /var/lib/mongo
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+
+    - name: Create MongoDB log directory
+      file:
+        path: /var/log/mongodb
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
