@@ -118,10 +118,10 @@ These commands are wrapped by two top-level automation scripts for full orchestr
 - **Overlay Network**: Provides isolated communication among pipeline containers
 
 ### Cluster Overview
-![Cluster Overview](./images/cluster-overview.png)
+![Cluster Overview](./cloudAsgn/images/cluster-overview.png)
 *Docker Swarm cluster showing 4 active nodes (1 manager, 3 workers) running Docker Engine 28.2.2.*
 
-![Docker Hub Repositories for Producer and Processor](./images/dockerHub.png)
+![Docker Hub Repositories for Producer and Processor](./cloudAsgn/images/dockerHub.png)
 *Deployed Docker Hub repositories (`searsleshawn/producer` and `searsleshawn/processor`) used for declarative stack image sources.*
 
 
@@ -149,10 +149,10 @@ make deploy
 ```
 
 ### Scaling Verification
-![Scaling Verification](./images/scaling.png)
+![Scaling Verification](./cloudAsgn/images/scaling.png)
 *Ansible debug output confirming scaling of Producer replicas (5/5) as defined in `vars/declarative.yml`.*
 
-![Stack Service Details](./images/Stack%20service%20details.png)
+![Stack Service Details](./cloudAsgn/images/Stack%20service%20details.png)
 *Detailed view of Swarm tasks across nodes confirming balanced distribution and successful replica launch.*
 
 
@@ -176,7 +176,7 @@ make deploy
   MONGO_INITDB_ROOT_PASSWORD={{ mongo_password }}
   ```
 
-![Network Isolation](./images/network-isolation.png)
+![Network Isolation](./cloudAsgn/images/network-isolation.png)
 
 *Custom overlay network (`iot_net`) ensuring restricted communication between internal pipeline services.*
 
@@ -202,7 +202,7 @@ Checks performed:
 - Processor consumes and writes to MongoDB
 - Logs show successful end-to-end data flow
 
-![Full IoT Stack Deployment](./images/full-iot-stack.png)
+![Full IoT Stack Deployment](./cloudAsgn/images/full-iot-stack.png)
 *Docker Swarm stack (`iot_stack`) showing running MongoDB, Processor, and multiple Producer replicas.*
 
 ## 9. Teardown and Cleanup
@@ -220,11 +220,11 @@ This removes:
 - Ansible-configured Docker services
 - All Terraform-provisioned AWS instances and resources (only when using `scripts/teardown.sh`)
 
-![CLI destroyed](./images/make-down.png)
+![CLI destroyed](./cloudAsgn/images/make-down.png)
 
 *Docker Swarm stack (`iot_stack`) shown being removed using make destroy*
 
-![teardown.sh](./images/teardown.png)
+![teardown.sh](./cloudAsgn/images/teardown.png)
 *Fully completed teardown process completed*
 
 ## 10. Observability & Metrics
@@ -235,7 +235,7 @@ Metrics can be collected via:
 - docker service ps iot_producer for scaling observation
 - Optional Prometheus/Grafana integration (future extension)
 
-![Container Metrics](./images/trafficTable.png)
+![Container Metrics](./cloudAsgn/images/trafficTable.png)
 *Live network I/O statistics (`docker stats`) showing Producer containers transmitting data across the Swarm network.*
 
 
