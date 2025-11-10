@@ -212,6 +212,4 @@ docker service logs obs_stack_promtail --tail 20
 ---
 
 ## Author
-**Le'Shawn Sears**  
-Cloud-Native Observability & Scaling – Vanderbilt CS8395  
-(c) 2025
+**Le'Shawn Sears**
