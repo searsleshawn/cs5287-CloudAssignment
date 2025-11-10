@@ -1,0 +1,149 @@
+# ============================================================
+# Declarative Swarm Stack Deployment – IoT Event Pipeline
+# ============================================================
+
+- hosts: kafka
+  become: yes
+  vars_files:
+    - vars/declarative.yml
+    - vars/secrets.yml
+
+  tasks:
+    # ---------------------------
+    # 1. Directory & ConfigMap
+    # ---------------------------
+    - name: Create directory for declarative definitions
+      file:
+        path: /home/ubuntu/iot_declarative
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+
+    - name: Create processor configuration file (ConfigMap equivalent)
+      copy:
+        dest: /home/ubuntu/iot_declarative/processor_config.env
+        content: |
+          KAFKA_BROKER=kafka:9092
+          MONGO_URI=mongodb://{{ mongo_username }}:{{ mongo_password }}@mongo:27017
+          TOPIC=transactions
+          LOG_LEVEL=INFO
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+
+    # ---------------------------
+    # 2. Dependencies
+    # ---------------------------
+    - name: Ensure pip and docker SDKs installed
+      apt:
+        name: python3-pip
+        state: present
+        update_cache: yes
+
+    - name: Install Ansible Python dependencies
+      pip:
+        name:
+          - docker
+          - jsondiff
+        state: present
+
+    # ---------------------------
+    # 3. Generate stack template
+    # ---------------------------
+    - name: Template Swarm stack file (Compose v3.9)
+      template:
+        src: templates/iot_stack.yml.j2
+        dest: /home/ubuntu/iot_declarative/iot_stack.yml
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+
+    # ---------------------------
+    # 4. Network readiness checks
+    # ---------------------------
+    - name: Wait until overlay network iot_net is visible
+      shell: docker network inspect iot_net --format '{{"{{"}}.Name{{"}}"}}'
+      register: network_check
+      retries: 5
+      delay: 5
+      until: network_check.rc == 0
+      changed_when: false
+
+    - name: Wait for ZooKeeper hostname resolution
+      shell: getent hosts zookeeper || echo "waiting"
+      register: zk_check
+      retries: 5
+      delay: 5
+      until: zk_check.rc == 0
+      changed_when: false
+
+    # ---------------------------
+    # Copy certificate files to EC2 node
+    # ---------------------------
+    - name: Ensure certificate directories exist
+      file:
+        path: /opt/certs/{{ item }}
+        state: directory
+        mode: "0755"
+      with_items:
+        - kafka
+        - mongo
+        - grafana
+    
+    - name: Copy certificate files to EC2 node
+      copy:
+        src: "{{ item.src }}"
+        dest: "/opt/certs/{{ item.dest }}"
+        mode: "0600"
+      with_items:
+        - { src: "kafka/kafka.crt", dest: "kafka/kafka.crt" }
+        - { src: "kafka/kafka.key", dest: "kafka/kafka.key" }
+        - { src: "mongo/mongo.crt", dest: "mongo/mongo.crt" }
+        - { src: "mongo/mongo.key", dest: "mongo/mongo.key" }
+        - { src: "grafana/grafana.crt", dest: "grafana/grafana.crt" }
+        - { src: "grafana/grafana.key", dest: "grafana/grafana.key" }
+      # 👇 this line fixes the “files/files/” duplication
+      delegate_to: localhost
+      vars:
+        ansible_become: false
+    
+
+    # ---------------------------
+    # 5. Deploy declarative Swarm stack
+    # ---------------------------
+    - name: Deploy declarative Swarm stack
+      community.docker.docker_stack:
+        name: iot_stack
+        state: present
+        compose:
+          - /home/ubuntu/iot_declarative/iot_stack.yml
+
+    # ---------------------------
+    # 6. Smoke Tests / Verification
+    # ---------------------------
+    - name: Show running Swarm services
+      shell: docker service ls
+      register: swarm_services
+      changed_when: false
+
+    - debug:
+        var: swarm_services.stdout_lines
+
+    - name: Check processor logs
+      shell: docker service logs --tail 20 iot_stack_processor || true
+      register: processor_logs
+      changed_when: false
+
+    - debug:
+        var: processor_logs.stdout_lines
+
+    - name: Verify Mongo document count
+      shell: |
+        cid=$(docker ps -qf "name=iot_stack_mongo")
+        [ -n "$cid" ] && docker exec "$cid" mongosh --quiet --eval "db.getSiblingDB('transactions_db').transactions.countDocuments()" || echo "mongo container not running"
+      register: mongo_count
+      changed_when: false
+
+    - debug:
+        var: mongo_count.stdout_lines

@@ -1,0 +1,19 @@
+from kafka import KafkaConsumer
+import json
+from pymongo import MongoClient
+
+consumer = KafkaConsumer(
+    "transactions",
+    bootstrap_servers=["{{ hostvars[groups['kafka'][0]].inventory_hostname }}:9092"],
+    value_deserializer=lambda v: json.loads(v.decode("utf-8"))
+)
+
+db = MongoClient(
+    "mongodb://{{ hostvars[groups['db'][0]].inventory_hostname }}:27017/"
+).transactions_db
+
+for message in consumer:
+    txn = message.value
+    txn["flagged"] = txn["amount"] > 300
+    db.transactions.insert_one(txn)
+    print("Stored:", txn)

@@ -1,0 +1,22 @@
+{
+  "db_dns": {
+    "sensitive": false,
+    "type": "string",
+    "value": "ec2-54-166-185-232.compute-1.amazonaws.com"
+  },
+  "kafka_dns": {
+    "sensitive": false,
+    "type": "string",
+    "value": "ec2-54-163-213-104.compute-1.amazonaws.com"
+  },
+  "processor_dns": {
+    "sensitive": false,
+    "type": "string",
+    "value": "ec2-54-242-89-168.compute-1.amazonaws.com"
+  },
+  "producer_dns": {
+    "sensitive": false,
+    "type": "string",
+    "value": "ec2-34-228-59-75.compute-1.amazonaws.com"
+  }
+}

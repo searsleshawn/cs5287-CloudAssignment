@@ -1,0 +1,31 @@
+# -----------------------------
+# Chaos / resilience drill script
+# -----------------------------
+#!/usr/bin/env bash
+# chaos_drill.sh - kill one task in each tier and show recovery
+# Usage: ./chaos_drill.sh iot_stack_producer iot_stack_processor iot_stack_mongo
+set -euo pipefail
+
+if [[ "$#" -lt 1 ]]; then
+  echo "Usage: $0 service1 [service2 ...]"
+  exit 1
+fi
+
+for svc in "$@"; do
+  echo "=== BEFORE ($svc) ==="
+  docker service ps "$svc" --no-trunc
+
+  # pick a running task container
+  CID=$(docker ps --format '{{.ID}} {{.Names}}' | awk -v s="$svc" '$2 ~ s {print $1; exit}')
+  if [[ -n "$CID" ]]; then
+    echo "Killing container $CID for $svc"
+    docker kill "$CID" || true
+  else
+    echo "No running container found for $svc"
+  fi
+
+  echo "Waiting for reschedule..."
+  sleep 10
+  docker service ps "$svc" --no-trunc
+  echo
+done

@@ -1,0 +1,66 @@
+# ============================================================
+# destroy.yml – Complete Swarm Teardown
+# ============================================================
+
+# ---------------------------
+# Step 1: Remove Stacks (on Manager)
+# ---------------------------
+- hosts: kafka
+  become: yes
+  tasks:
+    - name: Remove IoT Stack if present
+      community.docker.docker_stack:
+        name: iot_stack
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove Observability Stack if present
+      community.docker.docker_stack:
+        name: obs
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove overlay networks if present
+      shell: |
+        docker network rm iot_net metrics_net || true
+      ignore_errors: yes
+
+# ---------------------------
+# Step 2: Have Workers Leave Swarm
+# ---------------------------
+- hosts: db, processor, producer
+  become: yes
+  tasks:
+    - name: Leave Docker Swarm on workers (if joined)
+      shell: docker swarm leave || true
+      ignore_errors: yes
+
+    - name: Remove swarm metadata
+      file:
+        path: /var/lib/docker/swarm
+        state: absent
+      ignore_errors: yes
+
+# ---------------------------
+# Step 3: Reset Manager Swarm State
+# ---------------------------
+- hosts: kafka
+  become: yes
+  tasks:
+    - name: Force leave swarm (if active)
+      shell: docker swarm leave --force || true
+      ignore_errors: yes
+
+    - name: Remove swarm metadata
+      file:
+        path: /var/lib/docker/swarm
+        state: absent
+      ignore_errors: yes
+
+    - name: Verify swarm removal
+      shell: docker info | grep -A3 "Swarm"
+      register: swarm_info
+      changed_when: false
+
+    - debug:
+        var: swarm_info.stdout_lines

@@ -1,0 +1,259 @@
+# ============================================================
+# IoT Event Pipeline Setup and Swarm Initialization (Final)
+# ============================================================
+
+# ---------------------------
+# 1. Manager Node (Kafka)
+# ---------------------------
+- hosts: kafka
+  become: yes
+  vars:
+    kafka_dir: /opt/kafka
+  tasks:
+    - name: Set hostname for readability
+      hostname:
+        name: kafka
+
+    - name: Install required packages
+      apt:
+        name:
+          - openjdk-11-jdk
+          - docker.io
+          - python3-pip
+        state: present
+        update_cache: yes
+
+    - name: Enable and start Docker
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Install Ansible Docker SDK dependencies
+      pip:
+        name:
+          - docker
+          - jsondiff
+        state: present
+
+    - name: Initialize Docker Swarm (manager)
+      shell: docker swarm init --advertise-addr {{ ansible_default_ipv4.address }} || true
+      register: swarm_init
+      ignore_errors: yes
+
+    # --- Pre-pull known good Docker images ---
+    - name: Pre-pull required Docker images
+      shell: |
+        docker pull mongo:6.0
+        docker pull grafana/grafana:11.1.0
+        docker pull prom/prometheus:v2.55.0
+        docker pull grafana/loki:2.9.0
+        docker pull grafana/promtail:2.9.0
+        docker pull gcr.io/cadvisor/cadvisor:v0.49.1
+        docker pull {{ dockerhub_username }}/processor:latest
+        docker pull {{ dockerhub_username }}/producer:latest
+        docker pull wurstmeister/kafka:2.13-2.8.1
+        docker pull zookeeper:3.9
+      args:
+        executable: /bin/bash
+
+    - name: Label the manager node
+      shell: docker node update --label-add role=manager $(docker info -f '{{"{{.Swarm.NodeID}}"}}')
+      ignore_errors: yes
+
+    - name: Create overlay networks
+      community.docker.docker_network:
+        name: "{{ item }}"
+        driver: overlay
+        attachable: true
+        state: present
+      loop:
+        - iot_net
+        - metrics_net
+
+    - name: Get worker join token
+      shell: docker swarm join-token -q worker
+      register: swarm_worker_token
+      changed_when: false
+
+# ---------------------------
+# 2. Database Node (Worker)
+# ---------------------------
+- hosts: db
+  become: yes
+  tasks:
+    - name: Set hostname
+      hostname:
+        name: db
+
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+        update_cache: yes
+
+    - name: Enable and start Docker
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Restart Docker after hostname change
+      systemd:
+        name: docker
+        state: restarted
+
+    - name: Join DB node to Swarm
+      shell: >
+        docker swarm join
+        --token {{ hostvars[groups['kafka'][0]].swarm_worker_token.stdout }}
+        {{ hostvars[groups['kafka'][0]].ansible_default_ipv4.address }}:2377 || true
+      ignore_errors: yes
+
+    - name: Pre-pull required Docker images
+      shell: |
+        docker pull mongo:6.0
+        docker pull grafana/grafana:11.1.0
+        docker pull prom/prometheus:v2.55.0
+        docker pull grafana/loki:2.9.0
+        docker pull grafana/promtail:2.9.0
+        docker pull gcr.io/cadvisor/cadvisor:v0.49.1
+        docker pull {{ dockerhub_username }}/processor:latest
+        docker pull {{ dockerhub_username }}/producer:latest
+        docker pull wurstmeister/kafka:2.13-2.8.1
+        docker pull zookeeper:3.9
+      args:
+        executable: /bin/bash
+
+    - name: Get DB node ID
+      shell: docker info -f '{{"{{.Swarm.NodeID}}"}}'
+      register: db_nodeid
+
+    - name: Label DB node on manager
+      delegate_to: "{{ groups['kafka'][0] }}"
+      shell: docker node update --label-add role=db {{ db_nodeid.stdout }}
+
+    - name: Create MongoDB directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+      loop:
+        - /var/lib/mongo
+        - /var/log/mongodb
+
+# ---------------------------
+# 3. Processor Node (Worker)
+# ---------------------------
+- hosts: processor
+  become: yes
+  tasks:
+    - name: Set hostname
+      hostname:
+        name: processor
+
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+        update_cache: yes
+
+    - name: Enable and start Docker
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Restart Docker after hostname change
+      systemd:
+        name: docker
+        state: restarted
+
+    - name: Join Processor node to Swarm
+      shell: >
+        docker swarm join
+        --token {{ hostvars[groups['kafka'][0]].swarm_worker_token.stdout }}
+        {{ hostvars[groups['kafka'][0]].ansible_default_ipv4.address }}:2377 || true
+      ignore_errors: yes
+
+    - name: Pre-pull required Docker images
+      shell: |
+        docker pull mongo:6.0
+        docker pull grafana/grafana:11.1.0
+        docker pull prom/prometheus:v2.55.0
+        docker pull grafana/loki:2.9.0
+        docker pull grafana/promtail:2.9.0
+        docker pull gcr.io/cadvisor/cadvisor:v0.49.1
+        docker pull {{ dockerhub_username }}/processor:latest
+        docker pull {{ dockerhub_username }}/producer:latest
+        docker pull wurstmeister/kafka:2.13-2.8.1
+        docker pull zookeeper:3.9
+      args:
+        executable: /bin/bash
+
+    - name: Get Processor node ID
+      shell: docker info -f '{{"{{.Swarm.NodeID}}"}}'
+      register: proc_nodeid
+
+    - name: Label Processor node on manager
+      delegate_to: "{{ groups['kafka'][0] }}"
+      shell: docker node update --label-add role=processor {{ proc_nodeid.stdout }}
+
+# ---------------------------
+# 4. Producer Node (Worker)
+# ---------------------------
+- hosts: producer
+  become: yes
+  tasks:
+    - name: Set hostname
+      hostname:
+        name: producer
+
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+        update_cache: yes
+
+    - name: Enable and start Docker
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Restart Docker after hostname change
+      systemd:
+        name: docker
+        state: restarted
+
+    - name: Join Producer node to Swarm
+      shell: >
+        docker swarm join
+        --token {{ hostvars[groups['kafka'][0]].swarm_worker_token.stdout }}
+        {{ hostvars[groups['kafka'][0]].ansible_default_ipv4.address }}:2377 || true
+      ignore_errors: yes
+
+    - name: Pre-pull required Docker images
+      shell: |
+        docker pull mongo:6.0
+        docker pull grafana/grafana:11.1.0
+        docker pull prom/prometheus:v2.55.0
+        docker pull grafana/loki:2.9.0
+        docker pull grafana/promtail:2.9.0
+        docker pull gcr.io/cadvisor/cadvisor:v0.49.1
+        docker pull {{ dockerhub_username }}/processor:latest
+        docker pull {{ dockerhub_username }}/producer:latest
+        docker pull wurstmeister/kafka:2.13-2.8.1
+        docker pull zookeeper:3.9
+      args:
+        executable: /bin/bash
+
+    - name: Get Producer node ID
+      shell: docker info -f '{{"{{.Swarm.NodeID}}"}}'
+      register: prod_nodeid
+
+    - name: Label Producer node on manager
+      delegate_to: "{{ groups['kafka'][0] }}"
+      shell: docker node update --label-add role=producer {{ prod_nodeid.stdout }}

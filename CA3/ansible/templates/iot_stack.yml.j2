@@ -1,0 +1,149 @@
+version: "3.8"
+
+networks:
+  iot_net:
+    external: true
+
+secrets:
+  # --- Existing secrets (from vault / Swarm) ---
+  mongo_user:
+    external: true
+  mongo_pass:
+    external: true
+  kafka_user:
+    external: true
+  kafka_pass:
+    external: true
+
+  # --- TLS Certificates (local file-based secrets) ---
+  kafka_crt:
+    file: /opt/certs/kafka/kafka.crt
+  kafka_key:
+    file: /opt/certs/kafka/kafka.key
+  mongo_crt:
+    file: /opt/certs/mongo/mongo.crt
+  mongo_key:
+    file: /opt/certs/mongo/mongo.key
+  grafana_crt:
+    file: /opt/certs/grafana/grafana.crt
+  grafana_key:
+    file: /opt/certs/grafana/grafana.key
+
+services:
+  # ===============================
+  # Zookeeper
+  # ===============================
+  zookeeper:
+    image: bitnami/zookeeper:3.9
+    networks: [iot_net]
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.labels.role == kafka]
+
+  # ===============================
+  # Kafka Broker (TLS enabled)
+  # ===============================
+  kafka:
+    image: bitnami/kafka:3.7
+    networks: [iot_net]
+    ports:
+      - "9093:9093"
+    environment:
+      # Zookeeper connection
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+
+      # TLS configuration
+      - KAFKA_CFG_LISTENERS=SSL://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=SSL://kafka:9093
+      - KAFKA_CFG_SSL_ENABLED_PROTOCOLS=TLSv1.2,TLSv1.3
+      - KAFKA_CFG_SSL_KEYSTORE_LOCATION=/run/secrets/kafka_key
+      - KAFKA_CFG_SSL_KEYSTORE_CERTIFICATE_CHAIN=/run/secrets/kafka_crt
+      - KAFKA_CFG_SSL_CLIENT_AUTH=none
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+
+    secrets:
+      - kafka_crt
+      - kafka_key
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.labels.role == kafka]
+    depends_on: [zookeeper]
+
+  # ===============================
+  # MongoDB (TLS enabled)
+  # ===============================
+  mongo:
+    image: mongo:6.0
+    networks: [iot_net]
+    ports:
+      - "27017:27017"
+    command:
+      [
+        "--bind_ip_all",
+        "--tlsMode=requireTLS",
+        "--tlsCertificateKeyFile=/run/secrets/mongo_key",
+        "--tlsCAFile=/run/secrets/mongo_crt"
+      ]
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME_FILE=/run/secrets/mongo_user
+      - MONGO_INITDB_ROOT_PASSWORD_FILE=/run/secrets/mongo_pass
+    secrets:
+      - mongo_user
+      - mongo_pass
+      - mongo_crt
+      - mongo_key
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.labels.role == database]
+
+  # ===============================
+  # Producer (client-side TLS)
+  # ===============================
+  producer:
+    image: searsleshawn/producer:latest
+    networks: [iot_net]
+    environment:
+      - KAFKA_BOOTSTRAP=kafka:9093
+      - KAFKA_SECURITY_PROTOCOL=SSL
+      - KAFKA_SSL_CA_LOCATION=/run/secrets/kafka_crt
+      - TOPIC=telemetry
+    secrets:
+      - kafka_crt
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.labels.role == app]
+    depends_on: [kafka]
+
+  # ===============================
+  # Processor (client-side TLS + Mongo TLS)
+  # ===============================
+  processor:
+    image: searsleshawn/processor:latest
+    networks: [iot_net]
+    environment:
+      - KAFKA_BOOTSTRAP=kafka:9093
+      - KAFKA_SECURITY_PROTOCOL=SSL
+      - KAFKA_SSL_CA_LOCATION=/run/secrets/kafka_crt
+      - TOPIC=telemetry
+      - MONGO_URI=mongodb://mongo:27017/?tls=true&tlsCAFile=/run/secrets/mongo_crt
+    secrets:
+      - kafka_crt
+      - mongo_crt
+      - mongo_user
+      - mongo_pass
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.labels.role == app]
+    depends_on: [kafka, mongo]

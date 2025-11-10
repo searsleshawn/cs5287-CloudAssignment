@@ -1,0 +1,157 @@
+version: "3.8"
+
+networks:
+  metrics_net:
+    external: true
+  iot_net:
+    external: true
+
+secrets:
+  # --- Existing external secrets ---
+  grafana_user:
+    external: true
+  grafana_pass:
+    external: true
+
+  # --- TLS certificates (local file-based secrets) ---
+  grafana_crt:
+    file: /opt/certs/grafana/grafana.crt
+  grafana_key:
+    file: /opt/certs/grafana/grafana.key
+  kafka_crt:
+    file: /opt/certs/kafka/kafka.crt
+  mongo_crt:
+    file: /opt/certs/mongo/mongo.crt
+
+services:
+  # ===============================
+  # Grafana (HTTPS + TLS)
+  # ===============================
+  grafana:
+    image: grafana/grafana:11.1.0
+    networks: [metrics_net]
+    ports:
+      - "3443:3443"
+    secrets:
+      - grafana_user
+      - grafana_pass
+      - grafana_crt
+      - grafana_key
+    environment:
+      - GF_SECURITY_ADMIN_USER__FILE=/run/secrets/grafana_user
+      - GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/grafana_pass
+      - GF_SERVER_PROTOCOL=https
+      - GF_SERVER_CERT_FILE=/run/secrets/grafana_crt
+      - GF_SERVER_CERT_KEY=/run/secrets/grafana_key
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.labels.role == manager]
+
+  # ===============================
+  # Prometheus (metrics collector)
+  # ===============================
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    networks: [metrics_net]
+    ports:
+      - "9090:9090"
+    volumes:
+      - /opt/prometheus:/prometheus
+      - /opt/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.labels.role == manager]
+
+  # ===============================
+  # Loki (centralized log store)
+  # ===============================
+  loki:
+    image: grafana/loki:2.9.8
+    networks: [metrics_net]
+    ports:
+      - "3100:3100"
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - /opt/loki:/loki
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.labels.role == manager]
+
+  # ===============================
+  # Promtail (log collector)
+  # ===============================
+  promtail:
+    image: grafana/promtail:2.9.8
+    networks: [metrics_net]
+    volumes:
+      - /var/log:/var/log
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /etc/promtail/config.yml:/etc/promtail/config.yml:ro
+    command: ["-config.file=/etc/promtail/config.yml"]
+    deploy:
+      mode: global
+
+  # ===============================
+  # cAdvisor (node metrics)
+  # ===============================
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    networks: [metrics_net]
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    deploy:
+      mode: global
+
+  # ===============================
+  # Kafka Exporter (for Prometheus)
+  # ===============================
+  kafka_exporter:
+    image: bitnami/kafka-exporter:1.7.0
+    networks: [metrics_net, iot_net]
+    environment:
+      - KAFKA_BROKERS=kafka:9093
+      - KAFKA_VERSION=2.0.0
+      - KAFKA_TLS_ENABLED=true
+      - KAFKA_TLS_CA_FILE=/run/secrets/kafka_crt
+    secrets:
+      - kafka_crt
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.labels.role == kafka]
+    depends_on: [kafka]
+
+  # ===============================
+  # MongoDB Exporter (for Prometheus)
+  # ===============================
+  mongodb_exporter:
+    image: bitnami/mongodb-exporter:0.40.0
+    networks: [metrics_net, iot_net]
+    environment:
+      - MONGODB_URI=mongodb://mongo:27017/?tls=true&tlsCAFile=/run/secrets/mongo_crt
+    secrets:
+      - mongo_crt
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.labels.role == database]
+    depends_on: [mongo]
