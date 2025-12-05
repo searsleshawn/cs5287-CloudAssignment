@@ -1,0 +1,93 @@
+# ============================================================
+# Observability Stack Deployment (Prometheus + Grafana + Loki)
+# ============================================================
+
+- hosts: manager
+  become: yes
+  vars_files:
+    - vars/secrets.yml
+
+  tasks:
+    # ---------------------------
+    # 1. Create network + secrets
+    # ---------------------------
+    - name: Create overlay network for observability
+      community.docker.docker_network:
+        name: metrics_net
+        driver: overlay
+        attachable: true
+        state: present
+
+    - name: Create Grafana secrets
+      community.docker.docker_secret:
+        name: "{{ item.name }}"
+        data: "{{ item.data }}"
+        state: present
+      loop:
+        - { name: grafana_user, data: "{{ grafana_admin_user }}" }
+        - { name: grafana_pass, data: "{{ grafana_admin_password }}" }
+
+    # ---------------------------
+    # 2. Template stack
+    # ---------------------------
+    # - name: Template Observability stack
+    #   template:
+    #     src: templates/obs_stack.yml.j2
+    #     dest: /opt/stacks/obs_stack.yml
+    #     mode: '0644'
+    - name: Ensure /opt/stacks directory exists
+      file:
+        path: /opt/stacks
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Template Observability stack
+      template:
+        src: templates/obs_stack.yml.j2
+        dest: /opt/stacks/obs_stack.yml
+        mode: '0644'
+
+    # ---------------------------
+    # 3. Deploy stack fresh
+    # ---------------------------
+    - name: Remove existing Observability stack (if any)
+      community.docker.docker_stack:
+        name: obs
+        state: absent
+      ignore_errors: yes
+
+    - name: Ensure /etc/prometheus directory exists
+      file:
+        path: /etc/prometheus
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Copy Prometheus config
+      template:
+        src: templates/prometheus.yml.j2
+        dest: /etc/prometheus/prometheus.yml
+        mode: '0644'
+
+
+    # ---------------------------
+    # 4. Smoke test / verification
+    # ---------------------------
+    - name: Show running Swarm services
+      shell: docker service ls | grep obs_ || true
+      register: obs_services
+      changed_when: false
+
+    - debug:
+        var: obs_services.stdout_lines
+
+    - name: Check Grafana service logs
+      shell: docker service logs --tail 20 obs_grafana || true
+      register: grafana_logs
+      changed_when: false
+
+    - debug:
+        var: grafana_logs.stdout_lines

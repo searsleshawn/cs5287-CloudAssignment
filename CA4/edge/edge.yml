@@ -1,0 +1,87 @@
+# ============================================================
+# edge.yml - Deploy Producer on Edge + SSH Tunnel to Manager
+# ============================================================
+
+- hosts: edge
+  become: yes
+
+  vars:
+    kafka_port: 9092               # Kafka inside AWS Swarm
+    local_kafka_port: 19092        # Local forwarded port
+    manager_public_ip: "{{ manager_ip }}"
+    producer_image: "searsleshawn/producer:latest"
+    tunnel_service_name: "kafka-tunnel"
+
+  tasks:
+    # --------------------------------------------------------
+    # 1. Install Docker
+    # --------------------------------------------------------
+    - name: Install required packages
+      apt:
+        name:
+          - docker.io
+          - python3-pip
+        state: present
+        update_cache: yes
+
+    - name: Enable Docker
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Install Docker SDK for Ansible
+      pip:
+        name: docker
+        state: present
+
+    # --------------------------------------------------------
+    # 2. Create SSH tunnel systemd service
+    # --------------------------------------------------------
+    - name: Create systemd service for Kafka SSH tunnel
+      copy:
+        dest: /etc/systemd/system/{{ tunnel_service_name }}.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Persistent SSH tunnel to AWS Kafka Manager
+          After=network-online.target
+
+          [Service]
+          ExecStart=/usr/bin/ssh -N -o ExitOnForwardFailure=yes \
+            -i /home/{{ ansible_user }}/.ssh/id_rsa \
+            -o ServerAliveInterval=60 \
+            -o ServerAliveCountMax=3 \
+            -L {{ local_kafka_port }}:localhost:{{ kafka_port }} \
+            ubuntu@{{ manager_public_ip }}
+
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd daemons
+      systemd:
+        daemon_reload: yes
+
+    - name: Enable SSH tunnel service
+      systemd:
+        name: "{{ tunnel_service_name }}"
+        enabled: yes
+        state: started
+
+    # --------------------------------------------------------
+    # 3. Deploy Producer container (talks to Kafka over tunnel)
+    # --------------------------------------------------------
+    - name: Run Producer container on Edge
+      community.docker.docker_container:
+        name: edge_producer
+        image: "{{ producer_image }}"
+        restart_policy: always
+        state: started
+        env:
+          KAFKA_BOOTSTRAP: "localhost:{{ local_kafka_port }}"
+          TOPIC: "transactions"

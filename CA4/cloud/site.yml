@@ -1,0 +1,154 @@
+# ============================================================
+# site.yml - Stable Docker + Swarm Bootstrap
+# ============================================================
+
+# ============================================================
+# PHASE 1 — PREPARE ALL NODES (Docker installed, running, ready)
+# ============================================================
+# Swarm EXPECTS:
+#  - every node has Docker installed
+#  - hostnames finalized
+#  - daemons stable
+#  - Python SDK present (for Ansible's docker modules)
+# BEFORE "docker swarm init" is ever run.
+# ============================================================
+
+- hosts: all
+  become: yes
+  tasks:
+    - name: Set hostname for readability
+      hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Install required packages
+      apt:
+        name:
+          - docker.io
+          - python3-pip
+        state: present
+        update_cache: yes
+
+    - name: Enable and start Docker
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Install Ansible Docker SDK dependencies
+      pip:
+        name:
+          - docker
+          - jsondiff
+        state: present
+
+
+# ============================================================
+# PHASE 2 — MANAGER INITIALIZES SWARM
+# ============================================================
+# Swarm EXPECTS:
+#  - manager is CLEAN (not already part of a swarm)
+#  - Swarm is initialized BEFORE workers join
+#  - advertise-addr MUST match manager private VPC IP
+# ============================================================
+
+- hosts: manager
+  become: yes
+  tasks:
+
+    - name: Force reset any existing Docker Swarm state (manager)
+      shell: docker swarm leave --force || true
+      ignore_errors: true
+
+    - name: Initialize Docker Swarm (manager)
+      shell: >
+        docker swarm init
+        --advertise-addr {{ ansible_default_ipv4.address }}
+      register: swarm_init
+      changed_when: "'Swarm initialized' in swarm_init.stdout"
+
+    - name: Get worker join token
+      shell: docker swarm join-token -q worker
+      register: swarm_worker_token
+      changed_when: false
+
+
+# ============================================================
+# PHASE 3 — WORKERS JOIN SWARM (SERIALIZED)
+# ============================================================
+# Swarm EXPECTS:
+#  - workers join ONE AT A TIME
+#  - workers are NOT already in a swarm
+#  - workers retrieve correct join-token from manager
+#  - manager is reachable via internal IP:2377
+# ============================================================
+
+- hosts: workers
+  become: yes
+  serial: 1
+  tasks:
+    - name: Force reset any existing Docker Swarm state (worker)
+      shell: docker swarm leave --force || true
+      ignore_errors: true
+
+    - name: Join worker to swarm
+      shell: >
+        docker swarm join
+        --token {{ hostvars[groups['manager'][0]].swarm_worker_token.stdout }}
+        {{ hostvars[groups['manager'][0]].ansible_default_ipv4.address }}:2377
+      register: worker_join
+      changed_when: "'This node joined' in worker_join.stdout"
+
+    - name: Get worker Node ID after join
+      shell: docker info -f '{{"{{.Swarm.NodeID}}"}}'
+      register: worker_nodeid
+
+    - name: Store Node ID in hostvars
+      set_fact:
+        docker_node_id: "{{ worker_nodeid.stdout }}"
+
+
+# ============================================================
+# PHASE 4 — CREATE OVERLAY NETWORKS (MANAGER)
+# ============================================================
+# Swarm EXPECTS:
+#  - networks are created ONLY AFTER cluster is stable
+#  - networks created on manager propagate cluster-wide
+# ============================================================
+
+- hosts: manager
+  become: yes
+  tasks:
+    - name: Create overlay networks
+      community.docker.docker_network:
+        name: "{{ item }}"
+        driver: overlay
+        attachable: true
+        state: present
+      loop:
+        - iot_net
+        - metrics_net
+
+
+# ============================================================
+# PHASE 5 — LABEL WORKER NODES (MANAGER)
+# ============================================================
+# Swarm EXPECTS:
+#  - node IDs exist before labeling
+#  - labels applied ONLY on manager
+#  - correct roles guide stack scheduling later
+# ============================================================
+
+- hosts: manager
+  become: yes
+  tasks:
+    - name: Label Kafka node
+      shell: docker node update --label-add role=kafka {{ hostvars[groups['kafka'][0]].docker_node_id }}
+      when: "'kafka' in groups"
+
+    - name: Label DB node
+      shell: docker node update --label-add role=db {{ hostvars[groups['db'][0]].docker_node_id }}
+      when: "'db' in groups"
+
+    - name: Label Processor node
+      shell: docker node update --label-add role=processor {{ hostvars[groups['processor'][0]].docker_node_id }}
+      when: "'processor' in groups"

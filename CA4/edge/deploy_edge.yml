@@ -1,0 +1,27 @@
+- hosts: edge
+  become: yes
+
+  tasks:
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+        update_cache: yes
+
+    - name: Deploy producer compose file
+      template:
+        src: templates/edge_producer_compose.yml.j2
+        dest: /home/ubuntu/producer-compose.yml
+
+    - name: Deploy SSH tunnel systemd service
+      template:
+        src: templates/ssh_tunnel.service.j2
+        dest: /etc/systemd/system/kafka-tunnel.service
+      notify: Restart tunnel
+
+  handlers:
+    - name: Restart tunnel
+      systemd:
+        name: kafka-tunnel
+        state: restarted
+        enabled: true

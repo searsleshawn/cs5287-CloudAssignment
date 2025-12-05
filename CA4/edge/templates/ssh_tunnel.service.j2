@@ -1,0 +1,12 @@
+[Unit]
+Description=Kafka SSH Tunnel
+After=network.target
+
+[Service]
+User=ubuntu
+ExecStart=/usr/bin/ssh -i /home/ubuntu/.ssh/aws_rsa -o ExitOnForwardFailure=yes -L 9092:kafka:9092 ubuntu@{{ manager_public_ip }} -N
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

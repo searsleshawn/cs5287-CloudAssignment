@@ -1,0 +1,77 @@
+version: "3.8"
+
+networks:
+  iot_net:
+    external: true
+
+services:
+
+  # ======================
+  # ZOOKEEPER (Official)
+  # ======================
+  zookeeper:
+    image: zookeeper:3.8
+    networks: [iot_net]
+    environment:
+      ZOO_ADMINSERVER_ENABLED: "false"
+    deploy:
+      placement:
+        constraints:
+          - node.hostname == {{ hostvars[groups['kafka'][0]].inventory_hostname }}
+
+  # ==============================
+  # KAFKA (Official Apache Kafka)
+  # ==============================
+  kafka:
+    image: wurstmeister/kafka:2.13-2.8.1
+    networks: [iot_net]
+    ports:
+      - "9092:9092"
+    command: >
+      bash -c "
+      kafka-server-start /opt/kafka/config/server.properties \
+        --override broker.id=1 \
+        --override listeners=PLAINTEXT://0.0.0.0:9092 \
+        --override advertised.listeners=PLAINTEXT://kafka:9092 \
+        --override zookeeper.connect=zookeeper:2181 \
+        --override auto.create.topics.enable=true
+      "
+    deploy:
+      placement:
+        constraints:
+          - node.hostname == {{ hostvars[groups['kafka'][0]].inventory_hostname }}
+    depends_on:
+      - zookeeper
+
+  # ========
+  # MONGODB 
+  # ========
+  mongo:
+    image: mongo:6.0
+    networks: [iot_net]
+    ports:
+      - "27017:27017"
+    command: ["--bind_ip_all"]
+    deploy:
+      placement:
+        constraints:
+          - node.hostname == {{ hostvars[groups['db'][0]].inventory_hostname }}
+
+  # ==========
+  # PROCESSOR 
+  # ==========
+  processor:
+    image: searsleshawn/processor:latest
+    networks: [iot_net]
+    environment:
+      - KAFKA_BOOTSTRAP=kafka:9092
+      - TOPIC=transactions
+      - MONGO_URI=mongodb://mongo:27017
+    deploy:
+      replicas: 3
+      placement:
+        constraints:
+          - node.hostname == {{ hostvars[groups['processor'][0]].inventory_hostname }}
+    depends_on:
+      - kafka
+      - mongo

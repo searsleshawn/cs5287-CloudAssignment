@@ -1,0 +1,9 @@
+version: "3.8"
+
+services:
+  producer:
+    image: searsleshawn/producer:latest
+    environment:
+      KAFKA_BOOTSTRAP: "localhost:9092"
+      TOPIC: "transactions"
+    restart: unless-stopped
